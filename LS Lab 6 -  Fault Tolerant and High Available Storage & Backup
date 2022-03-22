@@ -1,0 +1,597 @@
+---
+tags: Large Systems
+---
+:::success
+# LS Lab 6 -  Fault Tolerant and High Available Storage & Backup
+Name: Ivan Okhotnikov
+:::
+
+# Fault Tolerant Storage
+
+## Task 1 - Take a pick
+:::warning
+Before choosing, briefly describe and explain the difference between block storage, file storage and object storage.
+
+Take a pick from the list proposed below:
+- DRBD (preferred option)
+- Ceph block device
+- Gluster block device
+- FreeBSD HAST (if you're familiar with *BSD)
+- does anything else exist as for BDs?
+:::
+
+## Implementation
+
+:::info
+> Before choosing, briefly describe and explain the difference between block storage, file storage and object storage.
+
+**File storage** implements data storage in the form of a single piece of information inside a folder
+
+**Cloud storage** splits data into blocks and stores them as separate parts
+
+**Object storage** is metadata with links to the data itself
+
+<center>
+
+![](https://i.imgur.com/sbG9biF.png)
+Figure 0: Storage schema
+</center>
+
+
+> I will choose 'DRBD`
+:::
+
+## Task 2 - Fault tolerant setup
+:::warning
+Create and configure a necessary amount of VMs for your option. Install necessary packets and
+then configure a distributed block device.
+Check (for all VMs) that a new block device appeared in the system and format it with usual
+filesystem like EXT4 or XFS and then mount. Make sure that each VM can recognize a filesystem
+on distributed block device.
+Validate that storage on your distributed block device is fault tolerant (create some data, destroy
+one node, check storage status, etc.).
+Have you lost your data after destroying one node? Was it necessary to do something on another
+nodes to get the data?
+:::
+
+## Implementation
+
+:::info
+
+<center>
+
+![](https://i.imgur.com/VFFDnwl.png)
+Figure 1: Topology of my hosts
+</center>
+
+For `drbd` to work, you will need to install it for all hosts
+
+To do this, add a ppa repository (since this repository is not included in ubuntu by default), install the necessary programs and enable the drbd module using `modprobe`
+
+```bash=1
+sudo add-apt-repository ppa:linbit/linbit-drbd9-stack
+sudo apt update
+sudo apt install -y drbd-dkms drbd-utils
+sudo modprobe drbd
+```
+
+Now for each host I will create a new loopback device using the commands:
+```bash=1
+sudo dd if=/dev/zero of=/dev/sdb1 bs=2024k count=1024
+sudo losetup -fP /dev/sdb1
+```
+
+Now I can see the IDs of the new loopback devices
+```bash=1
+losetup -a
+```
+
+
+<center>
+
+![](https://i.imgur.com/nUZda5Y.png)
+Figure 2: List of loop devices
+</center>
+
+Since the loop devices are block devices, I will need them for further installation
+
+Now I can proceed to setting the hostnames in the `/etc/hosts` file
+I previously found out the ip addresses for each server and wrote the following lines for each of the hosts:
+
+```bash=1
+192.168.122.116 drbd
+192.168.122.253 drbd2
+```
+
+Now I will proceed to configuring `/etc/drbd.d/global_common.conf`
+
+```bash=1
+global {
+ usage-count  yes;
+}
+common {
+ net {
+  protocol C;
+ }
+}
+```
+
+Here I specified the basic setup and forcibly specified the use of protocol `C` - full synchronization of replicas (the most used protocol)
+
+It's time to configure the resources (in my case, I created the `test.res` file)
+Since the loopback device is named the same for each server, I was able to reduce the configuration to the following:
+
+```bash=1
+resource test {
+	device /dev/drbd0;
+	disk /dev/loop3;
+        meta-disk internal;	
+        on drbd {
+ 		    address 192.168.122.116:7788;
+        }
+        on drbd2  {
+		    address 192.168.122.253:7788;
+        }
+}
+```
+
+In this configuration, I specified the host names (which I previously specified in `/etc/hosts`), the name of the block device - `drbd0`, as well as the ip addresses of each of the servers
+
+**These configurations should be identical for all servers - that's why I synchronized them on each server**
+
+Now, for each server, I will create device metadata for the `test` resource:
+
+```bash=
+sudo drbdadm create-md test
+```
+
+<center>
+
+![](https://i.imgur.com/7V5Q90S.png)
+Figure 3: Creating metadata of the `test` resource
+</center>
+
+And then I will turn on the resource for which I created meta data (I also performed this on all servers)
+
+```bash=1
+sudo drbdadm up test
+```
+Now I can check the status of my servers (their block device schema using `lsblk` and the status of my running resource)
+
+```bash=1
+lsblk
+```
+<center>
+
+![](https://i.imgur.com/irY7Zga.png)
+Figure 4: Validation of `lsblk`
+</center>
+
+```bash=1
+drbdadm status test
+```
+
+<center>
+
+![](https://i.imgur.com/ngJbNUH.png)
+Figure 5: Validation of the `drbd` resource
+</center>
+
+
+Now I will move on to the topic of replication - I want to make the server `drbd` primary, and `drbd2` replicated
+To do this, on the `drbd` server, I will enter the command:
+
+```bash=1
+drbdadm primary --force test
+```
+
+<center>
+
+![](https://i.imgur.com/i2rqDHH.png)
+Figure 6: Specifying the `drbd` host as primary
+</center>
+
+Now, during the `drbd` status check for each server, I will be able to find out (whether it is primary or replica)
+
+<center>
+
+![](https://i.imgur.com/8YwkcpA.png)
+Figure 7: Checking the `drbd` status for each server
+</center>
+
+It's time to mount:
+
+To do this, I will perform formatting to `EXT4` of my block device on the main host:
+
+```bash=1
+sudo mkfs -t ext4 /dev/drbd0
+```
+
+During execution, messages about problems will be displayed on the replicated server, but everything is fine (because I know that my shared block device has been formatted now)
+
+<center>
+
+![](https://i.imgur.com/SqaeYBv.png)
+Figure 8: Formatting a block device
+</center>
+
+
+Now I will check the operation of `drbd`
+
+I will create a directory on the primary `drbd` server, mount a block device and create a file `1` inside it and then rename it to `123`
+
+```bash=1
+sudo mkdir -p /mnt/test
+sudo mount /dev/drbd0 /mnt/test
+cd /mnt/test
+touch 1
+mv 1 123
+```
+
+<center>
+
+![](https://i.imgur.com/yGQvIni.png)
+Figure 9: Mounting the block device `/dev/drbd0` and working inside it
+</center>
+
+Then I will make the drbd host secondary and check that all files are synchronized with the other host
+
+Now I will make the primary host `drbd2`, mount the block device '/dev/drbd0' and look at its contents
+
+<center>
+
+![](https://i.imgur.com/hIjf8hh.png)
+Figure 10: Checking synchronization between two hosts
+</center>
+
+As you can see, the file `123` is inside a common block device, which means that my servers are synchronized using `drbd`
+
+After deleting the main host - `drbd2` on the replication host, I will get an error in the console
+After switching the host to the primary status and mounting it, I can still get the latest revision of the file system (figure 11)
+
+<center>
+
+![](https://i.imgur.com/n4cmtAN.png)
+Figure 11: Stress tolerance check in case of emergency shutdown of the main host
+</center>
+
+:::
+
+
+## Task 3 - High Available setup
+:::warning
+Modify your configuration to make storage high available. Besides it, you will need to format your
+block device with a clustered filesystem (e.g., OCFS2, GlusterFS, MooseFS).
+Again validate the storage on your distributed block device.
+Was it necessary to do something on another nodes to get the data in this setup?
+:::
+
+## Implementation
+
+:::info
+
+For this task I will need the `OCFS` software package
+```bash=1
+sudo apt install ocfs2-tools
+```
+
+For this task, I will need to reconfigure the `test.res` resource file for all my servers by enabling the `startup` and `net` tab, allowing the use of two `primary` servers
+
+File `/etc/drbd.d/test.res`
+
+```bash=1
+resource test {
+	device /dev/drbd0;
+	disk /dev/loop3;
+        net {
+            allow-two-primaries;
+            after-sb-0pri discard-zero-changes;
+            after-sb-1pri discard-secondary;
+            after-sb-2pri disconnect;
+        }
+        startup {
+                become-primary-on both;
+        }
+        meta-disk internal;	
+        on drbd {
+ 		    address 192.168.122.116:7788;
+        }
+        on drbd2  {
+		    address 192.168.122.253:7788;
+        }
+}
+```
+
+To apply these settings, you need to disable and re-enable the resource
+
+```bash=1
+sudo drbdadm disconnect test
+sudo drbdadm connect test
+```
+
+Now on each server I will go to `primary` for 'DRBD`
+
+```bash=1
+sudo drbdadm primary test
+```
+
+And from any of the servers I will mount a block device in the `ocfs2` format
+
+```bash=1
+sudo mkfs.ocfs2 /dev/drbd0 
+```
+
+<center>
+
+![](https://i.imgur.com/KO92pl1.png)
+Figure 12: Mounting a block device
+</center>
+
+Then I will need to configure ocfs
+To do this, I will need the kernel version.
+I can get it as follows:
+```bash=1
+uname -r
+```
+
+<center>
+
+![](https://i.imgur.com/nsa6fvF.png)
+Figure 13: Kernel Version
+</center>
+
+Then I will install `linux-modules-extra-generic` for my kernel version (since there are no modules in the standard package) and enable the `ocfs2_dlmfs` and `ocfs2_stackglue` modules
+
+```bash=1
+sudo apt install -y linux-modules-extra-5.4.0-62-generic
+sudo modprobe ocfs2_dlmfs ocfs2_stackglue
+```
+
+Now that everything is installed, I will configure the `ocfs2` configuration file
+
+File `/etc/ocfs2/cluster.conf`
+
+```bash=1
+cluster:
+     node_count = 2
+     name = ocfs2cluster
+
+node:
+     number = 1
+     cluster = ocfs2cluster
+     ip_port = 7788
+     ip_address = 192.168.122.116
+     name = drbd
+
+node:
+     number = 2
+     cluster = ocfs2cluster
+     ip_port = 7788
+     ip_address = 192.168.122.253
+     name = drbd2
+```
+
+There I specify each of my nodes and their number, as well as the name of the cluster
+
+Then it remains to enable `o2cb` and rename the downloaded cluster to `ocfs2cluster` (since I specified it that way in the configuration file)
+
+File `/etc/default/o2cb`
+
+<center>
+
+![](https://i.imgur.com/GoUwYdU.png)
+Figure 14: Setting up `o2cb`
+</center>
+
+After completing the settings, you will need to register a new cluster
+
+```bash=1
+sudo o2cb register-cluster ocfs2cluster
+```
+
+And add it to autorun with the subsequent inclusion of services
+
+```bash=1
+sudo systemctl enable o2cb ocfs2
+sudo systemctl start o2cb ocfs2
+```
+
+This completes the setup and for each server I can mount a block device `/dev/drbr0` for each device and check the high availability functionality
+
+```
+sudo mount -t ocfs2 /dev/drbd0 /mnt/test
+```
+
+<center>
+
+![](https://i.imgur.com/K1l76D2.png)
+Figure 15: Simultaneous work with shared storage from different servers
+</center>
+
+:::
+
+## Task 4 - Questions
+:::warning
+Explain what is fault tolerance and high availability
+What is a split-brain situation?
+What are the advantages and disadvantages of clustered filesystems?
+:::
+
+## Implementation
+
+:::info
+> Explain what is fault tolerance and high availability
+
+Fault tolerance is a property of the system to work offline even when one of the hosts fails or is destroyed.
+
+High availability is a property of the system when data is always available, even when one of the hosts fails.
+
+> What is a split-brain situation?
+
+This is a situation when replicated copies of a file begin to diverge in content. In this case, there is a mismatch of data or metadata of the file among the replica blocks, which leads to a situation where there is not enough information to authoritatively select a copy as a priority and restore bad copies.
+
+This situation can be resolved by adding a third replica as a priority.
+
+> What are the advantages and disadvantages of clustered filesystems?
+
+Advantages:
+
+- You can always expand by adding resources to a ready-made system
+- In case of technical work - you can stop one of the hosts and the system will remain operational
+- If one of the hosts has problems leading to work stoppage, his responsibilities will be automatically distributed among the remaining working hosts.
+
+Disadvantages:
+
+- Takes up a lot of resources on the host
+- Difficult monitoring and maintenance due to the fact that a stable cluster requires a large number of hosts
+:::
+
+
+# Backup
+
+## Task 1 - Take a pick
+:::warning
+Choose any tool from the list below:
+Borg
+restic
+rsync
+:::
+
+## Implementation
+
+:::info
+I'll choose `Borg`
+:::
+
+
+## Task 2 - Configuration & Testing
+:::warning
+Create 2 VMs (server and client), install and configure OS (please check the list of supported OS for your solution).
+Configure your solution: install necessary packets, edit the configuration.
+Create a repo on the backup server which will be used to store your backups. Bonus: configure an encrypted repo
+Make a backup of /home directory (create some files and directories before backuping) of your client. Don't forget to make a verification of backup (some solutions provide an embedded option to verify backups). If there is no embedded option to verify backups try to make a verification on your own.
+Then damage your client's /home/ directory (encrypt it or forcibly remove) and restore from backup. Has anything changed with the files after restoring? Can you see and edit them?
+:::
+
+## Implementation
+
+:::info
+
+<center>
+
+![](https://i.imgur.com/2qQTBxg.png)
+Figure 16: Topology of my hosts
+</center>
+
+To work with `Borg`, you will first need to install it on each host
+
+To do this, just run the command:
+
+```bash=1
+sudo apt install borgbackup
+```
+
+Then a very important step is to create a repository on the `backup` host (I will make it encrypted)
+
+```bash=1
+borg init --encryption=repokey borgrepo
+```
+
+<center>
+
+![](https://i.imgur.com/kElXkCW.png)
+Figure 17: Initializing my repository on the `backup` host
+</center>
+
+Then I will create some files in the home directory of the origin host
+
+<center>
+
+![](https://i.imgur.com/9bDfuUV.png)
+Figure 18: Creating my files inside `home` and checking their existence
+</center>
+
+And I will make a backup of the home directory using the org repository on the remote host `backup` (using the compression algorithm `lz4`)
+Also, I want to install timestamp by the name of the backup (so in the future it will be easier to choose the backup I need for recovery)
+
+```bash=1
+borg create -C lz4 192.168.122.196:borgrepo::`date +%Y%m%d_%H%M%S` ~/
+```
+
+<center>
+
+![](https://i.imgur.com/B4E8Bay.png)
+Figure 19: Creating a backup
+</center>
+
+The system will ask me to enter a password to access the remote host, and since I created the repository encrypted, I will need to enter a password
+
+Next, I can view the list of backups made using the command:
+```bash=1
+borg list 192.168.122.196:borgrepo
+```
+
+<center>
+
+![](https://i.imgur.com/1FCeIXb.png)
+Figure 20: Вывод всех созданых бекапов в репозитории
+</center>
+
+I also enter the ssh and repository password (Yes, I could pre-install ssh keys on a remote host (but since I'm doing everything for demonstration, I won't do it))
+
+Then I will delete the files I created in the home directory
+
+<center>
+
+![](https://i.imgur.com/eBSrEfi.png)
+Figure 21: Deleting my created files inside `home` and checking for deletion
+</center>
+
+And I will restore all the necessary files from the backup with the command:
+
+```bash=1
+borg extract 192.168.122.196:borgrepo::20220227_163833 home
+```
+
+Since borg restores the directory, which is now - I moved to the `root` directory `/` and executed the command (because it restores the full path to the backup folder is `/home/ubuntu/...`) and if I hadn't moved to the root directory in my home would create the file `home/ubuntu/...` 
+And if you run `extract` commands to specify the full path to the desired file, all will be restored with the use of a chain of directories
+<center>
+
+![](https://i.imgur.com/4deMmGo.png)
+Figure 22: Restoring files using backup and checking them
+</center>
+
+Answering the question:
+
+> Has anything changed with the files after restoring? Can you see and edit them?
+
+Nothing happened to the files - they were restored, they can be deleted/read/modified
+:::
+
+
+## Task 3 - Questions
+:::warning
+When and how often do you need to verify your backups?
+Backup rotations schemes, what are they? Are they available in your solution?
+:::
+
+## Implementation
+
+:::info
+> When and how often do you need to verify your backups?
+
+It depends on the value of the information and how often it can change.
+On average, small companies make backups once a day, as for large ones, backups can be made every hour
+
+> Backup rotations schemes, what are they? Are they available in your solution?
+
+This is a data backup system designed for computer media, which allows you to minimize the number of media used by repeatedly reusing them.
+The scheme allows you to determine the order of use of removable storage, as well as the time of storing information on it.
+As for rotation, it is implemented in my implementation (saved on a remote machine), but in the future it will be possible to automate the task of creating backups - create `cronjob' tasks for 'borg` and backups will be performed automatically according to a pre-specified schedule (it is important to pre-install ssh keys on the main server and backup server)
+:::
+
+
+## References:
+
+- [Prepare](https://www.stableit.ru/2011/05/losetup.html)
+- [High Available](https://mirivlad.ru/ustanovka-i-nastrojka-drbd-dlya-setevoj-replikatsii-fajlovoj-sistemy-na-debian-8/) 
