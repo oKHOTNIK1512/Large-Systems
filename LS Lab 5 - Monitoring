@@ -1,0 +1,513 @@
+---
+tags: Large Systems
+---
+:::success
+# LS Lab 5 - Monitoring
+Name: Ivan Okhotnikov, Alexandr Ismatov
+:::
+
+# Subtopic 1 - Infrastructure Monitoring
+
+## Task 1 - Preparation
+:::info
+Take a pick from the list proposed below:
+Zabbix (preferred option),
+Nagios XI + Performance Graphs,
+Icinga,
+M/Monit,
+your suggestion (if you know any other open source tool that can handle next tasks)
+
+After you select the monitoring instrument:
+Install a new guest system,
+Install and configure web-server + DBMS (e.g. NGINX + MariaDB),
+Install and configure a CMS. Create a page with some heavy content,
+Install another guest system and deploy the monitoring facility (and agents, if required).
+:::
+## Installation:
+
+We decided to use Zabbix in GNS3 VMs. So it will be easy for us to install it on a new machine.
+
+<center>
+
+![](https://i.imgur.com/5nPpe9X.png)
+
+</center>
+
+Zabbix package can be downloaded by:
+```
+wget https://repo.zabbix.com/zabbix/5.0/ubuntu/pool/main/z/zabbix-release/zabbix-release_5.0-1+focal_all.deb
+sudo dpkg -i zabbix-release_5.0-1+focal_all.deb
+```
+and installed with:
+```
+sudo dpkg -i zabbix-release_5.0-1+focal_all.deb
+```
+
+<center>
+
+![](https://i.imgur.com/8cE6Blz.png)
+![](https://i.imgur.com/lIPbkyT.png)
+
+</center>
+
+Then we installed requirements:
+
+```
+sudo apt update
+sudo apt install mysql-server zabbix-server-mysql zabbix-frontend-php zabbix-agent zabbix-nginx-conf -y
+```
+
+The next step was to add Zabbix user into MySQL with:
+
+<center>
+
+![](https://i.imgur.com/9LiOM9J.png)
+
+</center>
+
+and imported Zabbix database files into MySQL with: 
+
+```
+zcat /usr/share/doc/zabbix-server-mysql*/create.sql.gz | mysql -uzabbix -p zabbix
+```
+MySQL password for Zabbix should be defined in Zabbix configuration file by defining **DBPassword** field:
+
+```
+sudo nano /etc/zabbix/zabbix_server.conf
+```
+<center>
+
+![](https://i.imgur.com/WcPfMi5.png)
+
+</center>
+
+After we finished with MySQL, the NGINX time began. We add a few server information info configuration file:
+```
+sudo nano /etc/zabbix/nginx.conf
+```
+
+and uncomment the port and its domain name:
+
+<center>
+
+![](https://i.imgur.com/maJFMLe.png)
+
+![](https://i.imgur.com/PC17IFd.png)
+
+</center>
+
+The last step of Zabbix installation is to configure a few PHP options from
+```
+sudo nano /etc/zabbix/php-fpm.conf
+```
+
+<center>
+
+![](https://i.imgur.com/UeTEN5S.png)
+
+</center>
+
+```
+sudo nano /etc/zabbix/php-fpm.conf
+sudo systemctl start zabbix-server
+sudo systemctl enable zabbix-server
+```
+and to check that everything is configured and working fine:
+```
+sudo systemctl status zabbix-server
+```
+
+<center>
+
+![](https://i.imgur.com/HxsdSwy.png)
+
+</center>
+
+Now we can start the GUI process.
+
+<center>
+
+![](https://i.imgur.com/yDGFdPP.png)
+    Welcome Screen
+![](https://i.imgur.com/5s70xzp.png)
+    Checking system health
+![](https://i.imgur.com/026VOFn.png)
+    Configuring Database Credentials
+![](https://i.imgur.com/ruISwNO.png)
+    Server Details
+![](https://i.imgur.com/OSaM4j9.png)
+    Confirmation
+![](https://i.imgur.com/0NnLWt9.png)
+    Login Page (Admin/zabix)
+</center>
+
+## Adding hosts:
+
+Next, we installed Zabbix-agent on all Host VMs and made a small change in a **/etc/zabbix/zabbix-agentd-conf**:
+
+<center>
+
+![](https://i.imgur.com/vLdEA5R.png)
+
+![](https://i.imgur.com/xOgOfQf.png)
+
+</center>
+
+Now, it is time to add them into our Zabbix by going to **Zabbix Configuration** Menu and selecting **Hosts** option, then clicking on **Create Host**.
+
+<center>
+
+![](https://i.imgur.com/6hUzmj2.png)
+
+</center>
+
+The same actions were done to add all hosts.
+
+And we can see the final stage:
+
+<center>
+
+![](https://i.imgur.com/qToekwk.png)
+
+</center>
+
+If we go back to the main Dashboard, we can see the whole picture:
+
+<center>
+
+![](https://i.imgur.com/nZc1YSC.png)
+
+</center>
+
+From the Administration menu options, we can manage current user details and change the Dashboard widgets view:
+
+<center>
+
+![](https://i.imgur.com/1cpHwx2.png)
+
+![](https://i.imgur.com/0qNzuYi.png)
+</center>
+
+## Task 2 - Status alerts
+:::info
+Setup a few alerts, including
+against the guest system itself (ping),
+against available RAM or disk space (with threshold about 90%),
+against the web service,
+and against two web pages, a simple one and the heavy-duty one.
+:::
+
+## Implementation:
+
+First of all, we prepared a template using existing Apache Server / Linux OS / Linux Network templates.
+
+<center>
+
+![](https://i.imgur.com/Bm7Vqjq.png)
+</center>
+
+
+And configure required Apache-module macros:
+
+<center>
+
+![](https://i.imgur.com/htgfuDL.png)
+</center>
+
+This macro will be used to identify items (connectable modules used in monitoring and trigger creating process.)
+
+Let's make an item for Apache Service Ping:
+
+```yaml=
+net.tcp.service[http,"{$APACHE.STATUS.HOST}","{$APACHE.STATUS.PORT}"]
+```
+
+In total, we prepared 39 different items:
+
+<center>
+
+![](https://i.imgur.com/wHYHLma.png)
+</center>
+
+The next challenge are triggers. We prepared triggers for the following jobs:
+
+- Checking Server ping
+- Checking the available amount of RAM
+- Checking availability of Apache
+- Checking Apache restart time
+
+<center>
+
+![](https://i.imgur.com/He85mWu.png)
+</center>
+
+Then we tried to prepare two scenarios for WEB: light and heavy ones.
+
+Here is the example of a Heavy Web Page:
+
+<center>
+
+![](https://i.imgur.com/VymUHtR.png)
+
+![](https://i.imgur.com/hmXz8Ps.png)
+
+</center>
+
+And the bandwidth metrics for it:
+
+<center>
+
+![](https://i.imgur.com/rNukDb4.png)
+</center>
+
+:::info
+Validate that your monitoring displays an alert once you destroy the service (what is the delay, how long does it take for it to appear?)
+:::
+
+To test our triggers, we turned off the Apache Server and, after some time, get an error that something was WRONG with it:
+
+<center>
+
+![](https://i.imgur.com/0kBCxq0.png)
+</center>
+
+The delay is related to the value we set in our trigger. In our case, it was set for 10 seconds:
+
+<center>
+
+![](https://i.imgur.com/Zj5ycEy.png)
+</center>
+
+:::info
+Bonus: configure and validate that you receive an email (you can use Telegram instead of email (at least it is possible in Zabbix)) for alerts.
+:::
+
+To enable Telegram notifications, we need to configure it form **Administration - Media Types** option:
+
+<center>
+
+![](https://i.imgur.com/kcJmdVX.png)
+    
+![](https://i.imgur.com/FqqqRtj.png)
+</center>
+
+After entering the TOKEN, we may check its functionality of it by clicking on Test Message:
+
+<center>
+
+![](https://i.imgur.com/EVzq3VK.png)
+
+![](https://i.imgur.com/ctS1v3P.png)    
+</center>
+
+To enable it, we need to assign a suitable trigger in the Actions tab and enter the text that will be shown in the notification:
+
+<center>
+
+![](https://i.imgur.com/oinQaZK.png)
+
+![](https://i.imgur.com/7olwAjQ.png)
+</center>
+
+Next, we configured user_id for telegram, which will receive notifications, and tested it:
+
+<center>
+
+![](https://i.imgur.com/3vDKzqz.png)
+</center>
+
+---
+
+## Task 3 - Stress & performance graphs
+:::info
+Take a pick for stress benchmark:
+Yandex.Tank,
+AB,
+Autocannon,
+Siege,
+K8.
+:::
+
+## Implementation:
+
+We decided to use Yandex.Tank for this task. To use .deb packages, firstly we updated repositories:
+
+```
+deb http://ppa.launchpad.net/yandex-load/main/ubuntu trusty main
+deb-src http://ppa.launchpad.net/yandex-load/main/ubuntu trusty main
+```
+
+and installed Yandex.Tank:
+```
+sudo apt-get update && sudo apt-get install yandex-tank
+```
+
+:::info
+Then use your load-testing tool of choice and perform a few different load tests
+Play with the number of threads, number of clients, and request bodies while performing
+requests
+:::
+
+Then we create a file on a server with Yandex.Tank: load.yaml
+
+```yaml=1
+phantom:
+  address: 192.168.122.157:80 # [Target's address]:[target's port]
+  uris:
+    - /simple.php
+    - /db.php
+    - /hard.php
+  load_profile:
+    load_type: rps # schedule load by defining requests per second
+    schedule: line(1, 10, 10m) # starting from 1rps growing linearly to 10rps d>
+  instances: 10
+  loop: 10000
+```
+
+and run it with:
+```
+yandex-tank -c load.yaml
+```
+
+<center>
+
+![](https://i.imgur.com/U6zBOIX.png)
+</center>
+
+
+:::info
+Define performance graphs for AT LEAST the four different kinds of resources (CPU, RAM, DISK I/O, Network TX/RX)
+:::
+
+As we can in from the widgets, Apache has no requests, and it is working pretty quite.
+
+<center>
+
+![](https://i.imgur.com/oOSKjl6.png)
+</center>
+
+After we run Yandex.Tank the situation starts to change:
+
+<center>
+
+![](https://i.imgur.com/HYnYsB4.png)
+</center>
+
+The number of requests increases, and the available RAM starts to decrease.
+
+:::info
+Look at the monitoring screen to see how bad your system is. What resource is the more impacted?..
+:::
+
+As we can see from metrics, the biggest load was on RAM.
+
+:::info
+Configure an alert threshold for one of those and validate it (Note: it does not make sense to define a threshold for CPU or Network unless you can define a timer within it)
+:::
+
+We set a threshold for RAM availability to 90% (it will trigger if free RAM will is less than 90%):
+
+<center>
+
+![](https://i.imgur.com/PHAJTyQ.png)
+</center>
+
+---
+
+:::warning
+Questions:
+:::
+
+:::info
+Do the resulting metrics match with your stress load-test?
+:::
+
+Yes, both of them match.
+
+:::info
+Are your metrics representative of the actual state of affairs? Do they reflect reality?
+:::
+
+Yes, the metrics represent the actual state because the number of requests increases and RAM load increases as well.
+
+:::info
+Are some of those irrelevant and should be omitted?
+:::
+
+Network load does not change much. That is why it is better to set it lower, the same situation was with the CPU, but maybe it is only in our system. Related to load tests that we did.
+
+:::info
+So is your system high-load capable? If not, what would it take to make it happen?
+:::
+
+If we modify the long process script, we may say that the system is ready for high-load tests.
+
+---
+## Task 4 - Trends & business metrics
+:::info
+Trends - collect and store metric results for some period of time to see the analytic and forecasts.
+:::
+
+We can separately collect and store metrics for each item. As an example, an item for counting requests:
+
+<center>
+
+![](https://i.imgur.com/srtgUze.png)
+</center>
+
+Here we set storing the trends for 10 days and history for 90 days.
+
+:::info
+Define a few ones, for example
+- RPC (requests per second) on web-server, DBMS, etc
+- worker threads and processes
+- queue size
+- reply time (web-page generation time).
+- MySQL/MariaDB types of operations, operations per second, db bandwidth, db disk i/o
+and eventually define an alert threshold for one of those
+:::
+
+We provide two triggers for it:
+
+1- Checking latest Apache uptime in the last 3 minutes,
+2- Checking the lowest metric of RAM for the last 10 minutes.
+
+<center>
+
+![](https://i.imgur.com/7YbDZRR.png)
+
+![](https://i.imgur.com/ziheCra.png)
+</center>
+
+Testing memory trigger:
+
+<center>
+
+![](https://i.imgur.com/X2x7yZQ.png)
+</center>
+
+The testing trigger for Apache restarts:
+
+<center>
+
+![](https://i.imgur.com/Ir4R7Fs.png)
+</center>
+
+:::info
+Business metrics - the above metric does not mean or cannot prove that you application works well in terms of functionality. Proceed with more fine-grained data, for example
+- user activity (number of visits/views)
+- how many views vs how many applicants
+- page load time
+- login/sign ups/buys/comments/etc
+- ad conversions
+- high-level metrics
+:::
+
+We report the total amount of requests per second / how many of them get replies, and the number on the waiting list.
+
+<center>
+
+![](https://i.imgur.com/XIxfFJs.png)
+</center>
+
+---
