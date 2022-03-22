@@ -1,0 +1,565 @@
+---
+tags: Large Systems
+---
+:::success
+# LS lab 4 - CI/CD or NoSQL
+Name: Ivan Okhotnikov
+:::
+
+## Task 1 - CI/CD Theory
+:::warning
+Answer to the questions:
+1. What is the pipeline method of software development?
+2. What tasks and problems does the CI/CD process solve?
+3. What kind of general stages are there in the CI/CD pipeline? List them in the correct sequence and then describe them.
+4. What are unit tests?
+5. What are Job Artifacts and Artifacts Storage?
+:::
+
+## Implementation
+:::info
+> 1. What is the pipeline method of software development?
+
+This is a development method in which the CI/CD concept is implemented, which includes continuous integration and software delivery
+
+> 2. What tasks and problems does the CI/CD process solve?
+
+Allows you to automate the process of software deployment after its update
+
+> 3. What kind of general stages are there in the CI/CD pipeline? List them 
+in the correct sequence and then describe them.
+
+Basic steps:
+- Initialization (for example, initialization of ssh connection installation)
+- Assembly (assembly of the project, for the purpose of further work with it)
+- Testing (performing tests for the project in order to ensure the stability of the product, including preventing the deployment of changes with broken tests)
+- Delivery (delivery of the new version of the project to the necessary environments)
+- Deployment (deployment and installation of a new version of the product on environments)
+
+
+> 4. What are unit tests?
+
+These are application tests written for the purpose of checking individual modules of the program source code
+
+> 5. What are Job Artifacts and Artifacts Storage?
+
+Artifacts are files and directories that may occur during pipeline execution (for example, for composer php, the necessary libraries are downloaded and unpacked to the `/vendor` directory), and their storage is the place where they are written
+:::
+
+
+## Task 2 - Select a CI/CD solution/platform
+:::warning
+Some popular choices:
+1. Jenkins
+2. Github Actions
+3. GitLab
+4. CircleCI
+5. Travis CI
+6. Azure pipeline
+7. TeamCity
+8. ...
+:::
+
+## Implementation
+:::info
+I will use GitLab
+:::
+
+
+## Task 3 - Project preparation
+:::warning
+Prepare a project (create a new one or find or choose from previous labs); define the set of tests that will be used in your CI/CD. Describe it briefly. (What language, which test, …). Create and prepare a repository where you will deploy your CI/CD.
+:::
+
+## Implementation
+:::info
+I will take my old project (fullstack), the frontend of which is written in React JS, the backend (Laravel PHP)
+
+https://gitlab.com/IvanHunters/lichi-backend
+https://gitlab.com/IvanHunters/lichi-frontend
+
+The tests will only be for the backend so far (checking the creation of new data in the slides + streets tables to fill in streets and slides)
+
+
+:::
+
+## Task 4 - CI/CD Pipeline implementation
+:::warning
+Automate the building and deployment of your project using the CI/CD pipeline. You are free to choose any pipeline steps, but, as a rule, the following steps are basic and core:
+- checkout SCM
+- init
+- build
+- test
+- deploy
+You also might add some external steps (they will be considerer as bonus):
+- push to artifact repository
+- wipe environment
+...
+
+It will be good for you to play with CI cases, e.g. set up to trigger job for Pull Request, for specific branch, to tag/release, for commit to certain branch...
+
+Bonus 1: create multi branch pipeline.
+Bonus 2: play with different CI/CD solution plugins.
+:::
+
+## Implementation
+:::info
+So. I have two repositories (frontend and backend)
+I initialized on the docker swarm server
+
+For the backend, I'm implementing the following pipeline:
+- Build docker image
+- Push to docker registry
+- Running tests inside the created image
+- Deploy to the server (pull a new image, update the docker swarm image and delete old images)
+For the frontend:
+- Installation of necessary dependencies
+- Building the application
+- Deploy to the server via scp
+
+I'll start with the simplest - frontend
+To create a pipeline, I created a file `.gitlab-ci.yml` with the following contents:
+
+```yaml=1
+image: node:14.15.1-alpine3.12
+
+cache:
+  paths:
+    - node_modules/
+
+
+.setup_ssh: &setup_ssh >
+  echo "Setup SSH" &&
+  mkdir -p ~/.ssh &&
+  echo "$DEPLOY_SERVER_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/deploy &&
+  chmod 600 ~/.ssh/deploy &&
+  echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+
+.install_ssh: &install_ssh >
+  apk add --update --no-cache openssh bash
+
+before_script:
+  - *install_ssh
+  - *setup_ssh
+
+deploy:
+  stage: deploy
+  environment:
+    name: production
+  script:
+    - bash .deploy/deploy.sh
+  only:
+    - main
+
+```
+
+I specified the cache folder so that it would be collected faster with future plans.
+Also specified `before_script` to be executed before the main script
+For it, I took out two handlers `install_ssh` (since it is not installed by default in the NodeJS image and bash)
+As well as performing ssh setup `setup_ssh`
+
+In it, I used the variable `$DEPLOY_SERVER_PRIVATE_KEY`, which I specified in the repository settings
+
+<center>
+
+![](https://i.imgur.com/1SvCaqm.png)
+Figure 1: Variables for the frontend repository
+</center>
+
+I also created a bash script in the `.deploy` folder
+Here are its contents:
+```bash=1
+#!/bin/bash
+
+DEPLOY_SERVER=$DEPLOY_SERVER
+SERVER_FOLDER="lichi-iiko-swarm/frontend"
+
+# Building React output
+npm install
+npm run build
+
+echo "Deploying to ${DEPLOY_SERVER}"
+scp -i ~/.ssh/deploy -r build/ root@${DEPLOY_SERVER}:/var/www/html/${SERVER_FOLDER}/
+
+echo "Finished copying the build files"
+
+```
+There is nothing special about it, I just install dependencies, build a project and send it to the server via `scp`
+
+
+<center>
+
+![](https://i.imgur.com/6mM7MW1.png)
+Figure 2: Completed pipeline
+</center>
+
+
+I'll move on to a more interesting repository: `Backend`
+
+I will divide his pipeline setup file into several parts:
+
+## Initial
+```yaml=1
+variables:
+  DOCKER_REPO_NAME: "lichi-backend"
+  ANSIBLE_IMAGE: "ansible/container-conductor-alpine-3.5:0.9.3rc4"
+  KANIKO_IMAGE: "gcr.io/kaniko-project/executor:debug"
+
+stages:
+  - build
+  - test
+  - deploy
+
+
+.build-only: &build-only
+  only:
+    - main
+    - tags
+
+.deploy-stage-only: &deploy-stage-only
+  only:
+    - main
+    - tags
+
+```
+
+Here I create local variables:
+`DOCKER_REPO_NAME` - the name of the repository for push to the docker hub
+`ANSIBLE_IMAGE` is the name of the image `ansible` (I will use it for deployment)
+`KANIKO_IMAGE` is the name of the image `kaniko` (I will use it to collect my image and push in docker pub)
+
+As well as stages and triggers `.build-only`, `.deploy-stage-only`
+
+For the repository itself, I created variables in the settings (so as not to store them in configuration files, which is not safe)
+<center>
+
+![](https://i.imgur.com/Tj5fY9B.png)
+Figure 3: Repository Variables
+</center>
+
+### Build
+```yaml=1
+build:
+  stage: build
+  <<: *build-only
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  script:
+    - echo "Run image building process"
+    - echo "{\"auths\":{\"$DOCKER_REGESTRY_URL\":{\"username\":\"$DOCKER_REGESTRY_USERNAME\",\"password\":\"$DOCKER_REGESTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+    - >
+      if [ ! -z $CI_COMMIT_TAG ]; then
+      /kaniko/executor
+      --context $CI_PROJECT_DIR
+      --dockerfile $CI_PROJECT_DIR/$DOCKERFILE
+      --destination $DOCKER_REGESTRY_URL/$DOCKER_REGESTRY_PROJECT/$REPO_NAME:$CI_COMMIT_TAG
+      --destination $DOCKER_REGESTRY_URL/$DOCKER_REGESTRY_PROJECT/$REPO_NAME:$CI_COMMIT_SHORT_SHA
+      --destination $DOCKER_REGESTRY_URL/$DOCKER_REGESTRY_PROJECT/$REPO_NAME:latest
+      --cache=true; else
+      /kaniko/executor
+      --context $CI_PROJECT_DIR
+      --dockerfile $CI_PROJECT_DIR/$DOCKERFILE
+      --destination $DOCKER_REGESTRY_URL/$DOCKER_REGESTRY_PROJECT/$REPO_NAME:$CI_COMMIT_SHORT_SHA
+      --destination $DOCKER_REGESTRY_URL/$DOCKER_REGESTRY_PROJECT/$REPO_NAME:latest
+      --cache=true; fi
+  variables:
+    DOCKERFILE: Dockerfile
+    REPO_NAME: $DOCKER_REPO_NAME
+```
+
+There is a filter for the build: it will be available only when you push to the `main` branch or set a tag
+
+Since I'm using `kaniko`, I need to specify the configuration in the `/kaniko/.docker/config.json` file for it to work
+There I will write down the authorization settings in docker pub
+
+`DOCKER_REGESTRY_URL` - link to docker pub
+`DOCKER_REGESTRY_USERNAME` - user name
+`DOCKER_REGESTRY_PASSWORD` - password
+
+Further - better
+I am performing a check to indicate the tag:
+`if [ ! -z $CI_COMMIT_TAG ]; then`
+
+And if it was installed, I will push the image into the tag:
+`$CI_COMMIT_TAG` - this variable stores the tag that I put in
+`$CI_COMMIT_SHORT_SHA` - this variable stores the short SHA of my commit
+`latest` is a rewritable tag in the docker hub (so that you can always get the latest version of my image)
+
+If the tag was not set - push only in `latest` and `CI_COMMIT_SHORT_SHA`
+
+Also an important flag is `--cache=true`
+With further builds, this will reduce the waiting time.
+
+Well, how about without variables?
+
+```
+variables:
+    DOCKERFILE: Dockerfile
+    REPO_NAME: $DOCKER_REPO_NAME
+```
+Everything is clear here - what is the name of the Dockerfile and what is the name of the repository in the docker hub
+
+`Dockerfile` itself:
+
+```dockerfile=1
+FROM php:7.4-fpm
+
+COPY ./ /var/www/html
+# debian packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    htop \
+    wget \
+    lynx \
+    curl \
+    mc \
+    vim \
+    libmcrypt-dev \
+    libicu-dev \
+    libfreetype6-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libxml2-dev \
+    unzip \
+    locales \
+    tzdata \
+    nano
+
+RUN docker-php-ext-install mysqli \
+        && docker-php-ext-install pdo_mysql
+
+# php composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+RUN cd /var/www/html \
+    && cp .env.example .env \
+    && composer install
+
+
+# cleanup
+RUN apt-get clean \
+    && rm -fr /var/lib/apt/lists/* \
+    && rm -fr /tmp/* \
+    && rm -fr /var/tmp/*
+
+WORKDIR /var/www/html
+```
+
+He is the most typical
+Installing the necessary libraries, programs, creating a `.env` file based on a template (in it I will specify variables for the database in advance to run tests) and cleaning up unnecessary unnecessary data that could be formed during assembly (so that the image is smaller)
+
+### Test
+```yaml=1
+test:
+  stage: test
+  needs:
+    - build
+  image: $DOCKER_REGESTRY_URL/$DOCKER_REGESTRY_PROJECT/$DOCKER_REPO_NAME:$CI_COMMIT_SHORT_SHA
+  services:
+  - mysql:5.7
+  variables:
+    MYSQL_DATABASE: "test"
+    MYSQL_ROOT_PASSWORD: "test"
+    DB_HOST: "mysql"
+    DB_USERNAME: "root"
+  script:
+    - cd /var/www/html
+    - php artisan key:generate
+    - php artisan migrate
+    - vendor/bin/phpunit
+
+```
+The important part is specifying `needs`
+In it I say that it is necessary to run this stage only after the successful build of my image
+I also specify the `image` of my newly assembled image
+
+Since my Unit tests will require access to the database, I will need to create a service `mysql:6.7`
+I will specify variables for it:
+```
+MYSQL_DATABASE: "test"
+MYSQL_ROOT_PASSWORD: "test"
+DB_HOST: "mysql"
+DB_USERNAME: "root"
+```
+
+I specified the same data in the `.env' file inside the image of my backend
+
+Well, where to without scripts?
+- I'm going to the dirrectory
+- Initializing the application
+- I am migrating to the database and performing tests
+
+### Deploy
+
+```yaml=1
+.setup_ssh: &setup_ssh >
+  echo "Setup SSH" &&
+  mkdir -p ~/.ssh &&
+  echo "$DEPLOY_SERVER_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/deploy &&
+  chmod 600 ~/.ssh/deploy &&
+  echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+
+.deploy: &deploy >
+  echo "Deploy aplication" &&
+  chmod 700 .deploy &&
+  cd .deploy/ &&
+  ansible-playbook deploy.yml
+  --private-key="~/.ssh/deploy"
+  -i "environments/$ANSIBLE_INVENTORY"
+  -e docker_registry_url="\"$DOCKER_REGESTRY_URL\""
+  -e docker_registry_project="\"$DOCKER_REGESTRY_PROJECT\""
+  -e docker_repo_name="\"$DOCKER_REPO_NAME\""
+  -e docker_registry_creds_username="\"$DOCKER_REGESTRY_USERNAME\""
+  -e docker_registry_creds_password="\"$DOCKER_REGESTRY_PASSWORD\""
+  -e app_version="\"$APP_VERSION\""
+
+deploy:
+  stage: deploy
+  <<: *deploy-stage-only
+  image: $ANSIBLE_IMAGE
+  dependencies:
+    - build
+  before_script:
+    - *setup_ssh
+  script:
+    - *deploy
+  environment:
+    name: staging
+  variables:
+    ANSIBLE_INVENTORY: stage
+    DEPLOY_SERVER_PRIVATE_KEY: $SSH_DEPLOY_KEY
+    APP_VERSION: $CI_COMMIT_SHORT_SHA
+```
+
+To use variables from the `build` step I need to specify it in `dependencies`
+As in the case of the `frontend` component of my project, I set the private key before executing the main script, and the main script, which is based on the work of `ansible`
+
+I was ahead of the work with Ansible by a separate executable part: `.deploy`
+In it, I work with the `.deploy` folder, in which I created ansible role.
+
+<center>
+
+![](https://i.imgur.com/WxMypea.png)
+Figure 4: The `.deploy` directory
+</center>
+
+```bash=1
+  chmod 700 .deploy &&
+  cd .deploy/ &&
+  ansible-playbook deploy.yml
+  --private-key="~/.ssh/deploy"
+  -i "environments/$ANSIBLE_INVENTORY"
+  -e docker_registry_url="\"$DOCKER_REGESTRY_URL\""
+  -e docker_registry_project="\"$DOCKER_REGESTRY_PROJECT\""
+  -e docker_repo_name="\"$DOCKER_REPO_NAME\""
+  -e docker_registry_creds_username="\"$DOCKER_REGESTRY_USERNAME\""
+  -e docker_registry_creds_password="\"$DOCKER_REGESTRY_PASSWORD\""
+  -e app_version="\"$APP_VERSION\""
+```
+
+`-i` denotes the environment that I will work with (namely, information about the repository in the docker hub, authorization data and a new version of the image)
+Next, I set environment variables that I can use in the executable file `deploy.yml`
+
+
+The executable file `deploy.yml` is located in this folder
+
+#### Deploy.yml
+```yaml=1
+---
+- name: Deploy backend application
+  hosts: all
+
+  tasks:
+    - name: Docker login
+      docker_login:
+        debug: yes
+        registry_url: "{{ docker_registry_url }}"
+        username: "{{ docker_registry_creds_username }}"
+        password: "{{ docker_registry_creds_password }}"
+
+    - name: Pull docker image
+      shell: docker pull "{{ docker_registry_url }}/{{ docker_registry_project }}/{{ docker_repo_name }}:{{ app_version }}"
+
+    - name: Log out of DockerHub
+      docker_login:
+        state: absent
+
+    - name: Remove unnecessary previous versions of images to keep only the last released one
+      shell: "docker images -a | grep {{ docker_repo_name }} | awk 'FNR>1{print $3}' | xargs docker rmi -f || exit 0"
+
+    - name: Update swarm image
+      shell: "docker service update --image {{ docker_registry_project }}/{{ docker_repo_name }}:{{ app_version }}  app_php"
+```
+
+The first thing you need to do is log in to docker pub
+and then cut down a fresh image
+Then exit the docker hub
+Delete old images (so as not to waste memory on old images)
+And update the image on docker swarm to a new one
+
+And I also created Ansible configuration file that configures the connection to the server.
+
+<center>
+
+![](https://i.imgur.com/WxMypea.png)
+Figure 5: The `.deploy` directory
+</center>
+
+#### Ansible.cfg
+```bash=1
+[defaults]
+retry_files_enabled = False
+
+[ssh_connection]
+ssh_args = -o StrictHostKeyChecking=no -o PasswordAuthentication=no -o IdentitiesOnly=yes -o ControlMaster=auto -o ControlPersist=60s
+```
+
+
+My role needs to know where to connect, for this I created the `hosts` file inside the `environments/stage` directory
+
+<center>
+
+![](https://i.imgur.com/WdgqLKb.png)
+Figure 6: Directory `.deploy/environments/stage`
+</center>
+
+#### hosts
+```bash=1
+[all]
+adapter ansible_host=45.12.18.128 ansible_port=22 ansible_ssh_user=root ansible_python_interpreter=/usr/bin/python3
+```
+
+
+Now that everything is ready, I'll move on to the stages
+
+<center>
+
+![](https://i.imgur.com/kceAXZn.png)
+Figure 7: Gitlab stages
+</center>
+
+<center>
+
+![](https://i.imgur.com/FK82tGI.png)
+Figure 8: Build execution log
+</center>
+
+<center>
+
+![](https://i.imgur.com/8HaesAN.png)
+Figure 9: Test execution log
+</center>
+
+<center>
+
+![](https://i.imgur.com/tlg4z8d.png)
+Figure 10: Deployment execution log
+</center>
+
+:::
+
+
+## References:
+:::warning
+[Gitlab Documentation](https://docs.gitlab.com/)
+:::
